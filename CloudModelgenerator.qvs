@@ -1,0 +1,281 @@
+/*
+COSTRUTTORE DELLE DIMENSIONI e DELLO SPAZIO DELLE CHIAVI
+__DIMENSION_TABLES: Contiene la relazione Dimensione 1<->1 Tabella Logica
+*/
+
+[__DIMENSION_TABLES]:
+LOAD * INLINE [
+__DimensionTable, __Dimension
+ContoCoGe, IdContoCoGe
+ImmagineDw3, IdImmagine
+LottoCommissione, IdLottoCommissione
+ProdottoInduttore, IdProdottoInduttore
+ProdottoIndotto, IdProdottoIndotto
+SoggettoContabile, IdSoggettoContabile 
+PeriodoContabile, IdPeriodoContabile
+PeriodoCompetenza, IdPeriodoCompetenza
+TipoInduzione, FlgInduzione
+TipoRaccolta, IdTipoRaccolta
+StatoCommissione, FlgStimata
+Rete, IdReteCommerciale
+];
+
+[__FACT_TABLES]:
+LOAD * INLINE [
+__FactTable
+FattiRaccoltaInduttoreIndotto
+FattiCommissioneInduttoreIndotto
+FattiAUMInduttoreIndottoRete
+];
+
+// NON DOVREBBE ESSERE NECESSARIO MODIFICARE QUALCOSA DA QUI IN POI
+
+// Delimitatore delle Chiavi
+LET __Delimiter = '_';
+
+// Star selection
+LET __StarSelection = '*';
+
+//	Creo:
+//	-	la lista delle Dimensioni
+//	-	la SuperChiave dello Spazio delle Chiavi
+[__DIMENSIONS]:
+LOAD
+	CONCAT(CHR(39) & TRIM(__Dimension) & CHR(39), ',') AS __Dimensions,
+	CONCAT(TRIM(__Dimension), ' & ' & CHR(39) & '$(__Delimiter)' & CHR(39) & ' & ') AS __CodDimensions
+RESIDENT
+	[__DIMENSION_TABLES]
+;
+LET __Dimensions = PEEK('__Dimensions', 0, '[__DIMENSIONS]');
+LET __CodDimensions = PEEK('__CodDimensions', 0, '[__DIMENSIONS]');
+DROP TABLE [__DIMENSIONS];
+
+// Creo la lista delle Tabelle Logiche delle Dimensioni
+[__DIMENSIONTABLES]:
+LOAD
+	CONCAT(CHR(39) & TRIM(__DimensionTable) & CHR(39), ',') AS __DimensionTables
+RESIDENT
+	[__DIMENSION_TABLES]
+;
+LET __DimensionTables = PEEK('__DimensionTables', 0, '[__DIMENSIONTABLES]');
+DROP TABLE [__DIMENSIONTABLES];
+
+// Creo la lista delle Tabelle Logiche dei Fatti
+[__FACTTABLES]:
+LOAD
+	CONCAT(CHR(39) & TRIM(__FactTable) & CHR(39), ',') AS __FactTables
+RESIDENT
+	[__FACT_TABLES]
+;
+LET __FactTables = PEEK('__FactTables', 0, '[__FACTTABLES]');
+DROP TABLE [__FACTTABLES];
+
+//	Costruisco lo Spazio delle Chiavi Ristrette sui Fatti
+FOR EACH __FactTable IN $(__FactTables)
+
+	FOR EACH __Dimension IN $(__Dimensions)
+	
+		//	La SuperChiave sulla Tabella Logica dei Fatti è composta dalle sole Chiavi del Fatto
+		IF FIELDNUMBER('$(__Dimension)', '$(__FactTable)') > 0 THEN
+		
+			[__FACT_TABLE_DIMENSIONS]:
+			LOAD
+				'$(__Dimension)' AS __FactTableDimension
+			AUTOGENERATE 1
+			;
+		
+		ELSE	//	Le Dimensioni non presenti andranno prodotte con le combinazioni delle presenti nello Spazio delle Chiavi
+		
+			[__FACT_TABLE_MISSING_DIMENSIONS]:
+			LOAD
+				'$(__Dimension)' AS __FactTableMissingDimension
+			AUTOGENERATE 1
+			;
+		
+		END IF
+		;
+						
+	NEXT
+
+	//	Assemblo:
+	//	- la Superchiave dei Fatti ed il suo nome
+	//	- la lista delle Dimensioni presenti nei Fatti
+	//	N.B.: per ipotesi i Fatti hanno almeno una delle Dimensioni dichiarate in [__DIMENSION_TABLES]
+	[__FACTTABLEDIMENSIONS]:
+	LOAD
+		CONCAT(TRIM(__FactTableDimension), ' & ' & CHR(39) & '$(__Delimiter)' & CHR(39) & ' & ') AS __CodFactTableDimensions,
+		CONCAT(TRIM(__FactTableDimension), '$(__Delimiter)') AS __CodFactTableDimensionsID,
+		CONCAT(TRIM(__FactTableDimension), ',') AS __FactTableDimensions	//	Assemblo la lista delle Dimensioni presenti nei Fatti
+	RESIDENT
+		[__FACT_TABLE_DIMENSIONS]
+	;
+	LET __CodFactTableDimensions = PEEK('__CodFactTableDimensions', 0, '[__FACTTABLEDIMENSIONS]');
+	LET __CodFactTableDimensionsID = REPLACE(PEEK('__CodFactTableDimensionsID', 0, '[__FACTTABLEDIMENSIONS]'), CHR(39) & CHR(39), '');
+	LET __FactTableDimensions = PEEK('__FactTableDimensions', 0, '[__FACTTABLEDIMENSIONS]');
+	DROP TABLE [__FACTTABLEDIMENSIONS];
+	DROP TABLE [__FACT_TABLE_DIMENSIONS];
+
+	//	Assemblo la lista delle Dimensioni non presenti nei Fatti
+	IF NOOFROWS('__FACT_TABLE_MISSING_DIMENSIONS') > 0 THEN
+	
+		[__FACTTABLEMISSINGDIMENSIONS]:
+		LOAD
+			CONCAT(CHR(39) & TRIM(__FactTableMissingDimension) & CHR(39), ',') AS __FactTableMissingDimensions
+		RESIDENT
+			[__FACT_TABLE_MISSING_DIMENSIONS]
+		;
+		LET __FactTableMissingDimensions = PEEK('__FactTableMissingDimensions', 0, '[__FACTTABLEMISSINGDIMENSIONS]');
+		DROP TABLE [__FACTTABLEMISSINGDIMENSIONS];
+		DROP TABLE [__FACT_TABLE_MISSING_DIMENSIONS];
+	
+	ELSE	//	Caso in cui i Fatti considerati abbiano tutte le Dimensioni dichiarate in [__DIMENSION_TABLES]
+
+		LET __FactTableMissingDimensions = '';
+		
+	END IF;
+		
+	//	Aggiungo alla Tabella Logica dei Fatti la SuperChiave dei Fatti
+	_$(__FactTable):
+	LOAD
+		$(__CodFactTableDimensions) AS _ID_$(__CodFactTableDimensionsID),
+		*
+	RESIDENT
+		$(__FactTable)
+	;
+	DROP TABLE $(__FactTable);
+	RENAME TABLE _$(__FactTable) TO $(__FactTable);
+	
+	//	Aggiungo le SuperChiavi dei Fatti alle SuperChiavi dei Parziali
+	IF NOOFROWS('_TAB_KEY_$(__CodFactTableDimensionsID)') > 0 THEN	//	Se la Tabella Logica dello Spazio delle Chiavi esiste la Concateno
+
+		CONCATENATE (_TAB_KEY_$(__CodFactTableDimensionsID))
+		LOAD
+			DISTINCT
+				_ID_$(__CodFactTableDimensionsID),
+				_ID_$(__CodFactTableDimensionsID) AS _ID_TAB_KEY_$(__CodFactTableDimensionsID)
+		RESIDENT
+			$(__FactTable)
+		WHERE
+			NOT EXISTS(_ID_TAB_KEY_$(__CodFactTableDimensionsID), _ID_$(__CodFactTableDimensionsID))
+		;
+
+	ELSE	//	Altrimenti la Creo
+
+		_TAB_KEY_$(__CodFactTableDimensionsID):
+		LOAD
+			DISTINCT
+				_ID_$(__CodFactTableDimensionsID),
+				_ID_$(__CodFactTableDimensionsID) AS _ID_TAB_KEY_$(__CodFactTableDimensionsID)
+		RESIDENT
+			$(__FactTable)
+		;
+		
+	END IF
+
+	//	Costruisco la Lista di selezione (a NULL()) per le Dimensioni non presenti
+	LET __FactTableMissingDimensionsToNULL = '';
+	FOR EACH __FactTableMissingDimension IN $(__FactTableMissingDimensions)
+		
+		LET __FactTableMissingDimensionsToNULL = '$(__FactTableMissingDimensionsToNULL)' & ', NULL() AS $(__FactTableMissingDimension)';
+		
+	NEXT
+
+	//	Aggiungo le Chiavi trovate sui Fatti allo Spazio delle Chiavi
+	[__TAB_KEY]:
+	LOAD
+		DISTINCT
+			$(__FactTableDimensions)
+			$(__FactTableMissingDimensionsToNULL)
+	RESIDENT
+		$(__FactTable)
+	;
+		
+	IF NOOFROWS('[_TAB_KEY]') > 0 THEN	//	Se la Tabella Logica dello Spazio delle Chiavi esiste la Concateno
+
+		CONCATENATE ([_TAB_KEY])
+		LOAD
+			$(__CodDimensions) AS _ID_TAB_KEY,
+			*
+		RESIDENT
+			[__TAB_KEY]
+		WHERE
+			NOT EXISTS(_ID_TAB_KEY)
+		;
+	
+	ELSE	//	Altrimenti la Creo
+
+		[_TAB_KEY]:
+		LOAD
+			$(__CodDimensions) AS _ID_TAB_KEY,
+			*
+		RESIDENT
+			[__TAB_KEY]
+		;
+		
+	END IF
+
+	DROP TABLE [__TAB_KEY];
+		
+NEXT
+
+//	Costruisco lo Spazio delle Chiavi
+FOR EACH __FactTable IN $(__FactTables)
+
+	FOR EACH __Dimension IN $(__Dimensions)
+	
+		//	La SuperChiave sulla Tabella Logica dei Fatti è composta dalle sole Chiavi del Fatto
+		IF FIELDNUMBER('$(__Dimension)', '$(__FactTable)') > 0 THEN
+		
+			[__FACT_TABLE_DIMENSIONS]:
+			LOAD
+				'$(__Dimension)' AS __FactTableDimension
+			AUTOGENERATE 1
+			;
+		
+		END IF
+		;
+			
+	NEXT
+
+	//	Assemblo:
+	//	- la Superchiave dei Fatti ed il suo nome
+	//	- la lista delle Dimensioni presenti nei Fatti
+	//	N.B.: per ipotesi i Fatti hanno almeno una delle Dimensioni dichiarate in [__DIMENSION_TABLES]
+	[__FACTTABLEDIMENSIONS]:
+	LOAD
+		CONCAT(TRIM(__FactTableDimension), ' & ' & CHR(39) & '$(__Delimiter)' & CHR(39) & ' & ') AS __CodFactTableDimensions,
+		CONCAT(TRIM(__FactTableDimension), '$(__Delimiter)') AS __CodFactTableDimensionsID,
+		CONCAT(TRIM(__FactTableDimension), ',') AS __FactTableDimensions	//	Assemblo la lista delle Dimensioni presenti nei Fatti
+	RESIDENT
+		[__FACT_TABLE_DIMENSIONS]
+	;
+	LET __CodFactTableDimensions = PEEK('__CodFactTableDimensions', 0, '[__FACTTABLEDIMENSIONS]');
+	LET __CodFactTableDimensionsID = REPLACE(PEEK('__CodFactTableDimensionsID', 0, '[__FACTTABLEDIMENSIONS]'), CHR(39) & CHR(39), '');
+	LET __FactTableDimensions = PEEK('__FactTableDimensions', 0, '[__FACTTABLEDIMENSIONS]');
+	DROP TABLE [__FACTTABLEDIMENSIONS];
+	DROP TABLE [__FACT_TABLE_DIMENSIONS];
+
+	//	Rimuovo dalla Tabella Logica dei Fatti tutte le Dimensioni
+	DROP FIELDS $(__FactTableDimensions) FROM $(__FactTable);
+	
+	//	Se la SuperChiave non esiste già, la creo
+	IF FIELDNUMBER('_ID_TAB_KEY_$(__CodFactTableDimensionsID)', '_TAB_KEY') = 0 THEN
+	
+		__TAB_KEY:
+		LOAD
+			*,
+			$(__CodFactTableDimensions) AS _ID_TAB_KEY_$(__CodFactTableDimensionsID)
+		RESIDENT
+			_TAB_KEY
+		;
+		
+		DROP TABLE _TAB_KEY;
+		RENAME TABLE __TAB_KEY TO _TAB_KEY;
+		
+	END IF;
+
+NEXT
+
+//	Cancello le Tabelle di Configurazione
+DROP TABLES __DIMENSION_TABLES;
+DROP TABLES __FACT_TABLES;
